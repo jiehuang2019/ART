@@ -1202,6 +1202,7 @@ async def train() :
                     )
                 )
             )
+        print("=====step 1 group entity")
         print(groups[0])
         # Gather all trajectory groups
         finished_groups = await art.gather_trajectory_groups(
@@ -1210,12 +1211,17 @@ async def train() :
             max_exceptions=training_config["rollouts_per_group"] * len(batch.items),
         )
         validate_trajectories(finished_groups) 
+        print("=====step 2 gathered and validated trajectory groups")
+        print(finished_groups[0])
     
         judged_groups = []
         for group in finished_groups:
             # Use RULER to assign relative scores to each trajectory
             judged_group = await ruler_score_group(group, "openai/o4-mini", debug=True)
             judged_groups.append(judged_group)
+
+        print("=====step 3 judged groups")
+        print(judged_groups[0])
     
         # await model.delete_checkpoints()
         try:
@@ -1233,6 +1239,7 @@ async def train() :
           print(f"详细异常：{e!r}")
           print("=" * 80)
           raise
+        print("=====step 4 model trained")
 
 # =============================================================================
 #     # Save checkpoint to G-Drive
