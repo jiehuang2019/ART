@@ -88,7 +88,7 @@ class SkyPilotBackend(Backend):
         art_server_running = await is_task_created(
             cluster_name=self._cluster_name, task_name="art_server"
         )
-
+        print("1")
         if art_server_running and force_restart:
             print("force_restart=True; cancelling existing art_server task…")
             await to_thread_typed(
@@ -98,6 +98,7 @@ class SkyPilotBackend(Backend):
             await asyncio.sleep(5)
             art_server_running = False
 
+        print("2")
         if art_server_running:
             self._art_server_job_id = await get_task_job_id(
                 cluster_name=self._cluster_name, task_name="art_server"
@@ -142,14 +143,17 @@ class SkyPilotBackend(Backend):
             await wait_for_art_server_to_start(cluster_name=self._cluster_name)
             print("Art server task started")
 
+        print("3")
         base_url = await get_art_server_base_url(self._cluster_name)
         print(f"Using base_url: {base_url}")
 
         # Manually call the real __init__ now that base_url is ready
         super(cls, self).__init__(base_url=base_url)
 
+        print("4")
         if self._art_server_job_id is not None and tail_logs:
-            await asyncio.to_thread(
+            print("55")
+            asyncio.to_thread(
                 sky.tail_logs,
                 cluster_name=self._cluster_name,
                 job_id=self._art_server_job_id,
@@ -158,6 +162,7 @@ class SkyPilotBackend(Backend):
             print(
                 "Tailing logs. This process will only automatically exit after the backend is down. To exit before then, you'll have to manually close the process (e.g. ctrl+C)."
             )
+        print("5")
         return self
 
     async def _launch_cluster(
@@ -192,7 +197,7 @@ class SkyPilotBackend(Backend):
 
         if art_version_is_semver:
             art_installation_command = (
-                f"uv pip install openpipe-art[backend]=={art_version}"
+                f"uv pip install openpipe-art[backend]=={art_version} --system"
             )
         elif os.path.exists(art_version):
             # copy the contents of the art_path onto the new machine
