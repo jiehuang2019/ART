@@ -8,6 +8,8 @@ Conversion Date: 2025-11-15T21:09:00.713Z
 
 #@title Email Search Code
 
+import httpx
+
 import os
 import random
 import sqlite3
@@ -1064,10 +1066,89 @@ print("LangGraph rollout function defined!")
 # The `gather` step will wait for all of the trajectories to be generated, then it will use RULER to assign relative scores to each trajectory.
 # 
 # Our notebook will then delete all but the most recent checkpoint and train the model on the scored trajectories.
+from openai.types.chat.chat_completion import Choice as ChatChoice, ChatCompletionMessage
 
+def validate_trajectories(groups):
+    for gi, group in enumerate(groups):
+        for ti, traj in enumerate(group.trajectories):
+            if isinstance(traj, Exception):
+                print(f"[TRAJ ERROR] group {gi}, traj {ti} is Exception: {traj}")
+                continue
 
+            mac = getattr(traj, "messages_and_choices", None)
+            if mac is None:
+                print(f"[WARN] group {gi}, traj {ti} has no messages_and_choices attr: {type(traj)}")
+                continue
 
+            print(f"[INFO] group {gi}, traj {ti}, {len(mac)} messages_and_choices")
+            for mi, msg in enumerate(list(mac)):  # 用 list(mac) 避免迭代时修改列表问题
 
+                # 1) 如果是 OpenAI Choice 对象，转成标准 dict
+                if isinstance(msg, ChatChoice):
+                    m: ChatCompletionMessage = msg.message
+                    new_msg = {
+                        "role": m.role,                       # 'assistant'
+                        "content": m.content or "",
+                    }
+
+                    # 如果有 tool_calls，则一并保留（结构简化一点即可）
+                    if m.tool_calls:
+                        new_msg["tool_calls"] = [
+                            {
+                                "id": tc.id,
+                                "type": tc.type,
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            }
+                            for tc in m.tool_calls
+                        ]
+
+                    # ⚠️ 对于 tool_calls 类型的 step，通常不需要参与 GRPO 的 logprobs 计算，
+                    #    所以这里我刻意不把 msg.logprobs 塞进去，避免 ART 去优化这一段。
+                    #    如果你以后想训练这段，可以再专门设计映射。
+                    mac[mi] = new_msg
+                    msg = new_msg  # 下面的检查继续用新 dict
+                    # 继续往下走，不 raise
+                    # continue  # 如果你不想再做其它检查，这里可以直接 continue
+
+                # 2) 非 dict 但也不是 Choice，先打印再抛错（便于发现其它类型）
+                if not isinstance(msg, dict):
+                    print(f"[BAD MSG] g{gi} t{ti} m{mi}: not dict -> {type(msg)} {msg}")
+                    raise RuntimeError("Non-dict message in messages_and_choices")
+
+                # 3) dict 但缺 role -> 这是会在后端炸 KeyError 的情况
+                if "role" not in msg:
+                    print(f"[BAD MSG] g{gi} t{ti} m{mi}: missing role -> {msg}")
+                    raise RuntimeError("Message without role in messages_and_choices")
+
+                # 4) 有 logprobs 但 role 不是 assistant，给个告警
+                if "logprobs" in msg and msg.get("role") != "assistant":
+                    print(f"[WARN] g{gi} t{ti} m{mi}: logprobs but role={msg.get('role')} -> {msg}")
+
+def validate_trajectories_v3(groups):
+    for gi, group in enumerate(groups):
+        for ti, traj in enumerate(group.trajectories):
+            if isinstance(traj, Exception):
+                print(f"[TRAJ ERROR] group {gi}, traj {ti} is Exception: {traj}")
+                continue
+
+            mac = getattr(traj, "messages_and_choices", None)
+            if mac is None:
+                print(f"[WARN] group {gi}, traj {ti} has no messages_and_choices attr: {type(traj)}")
+                continue
+
+            print(f"[INFO] group {gi}, traj {ti}, {len(mac)} messages_and_choices")
+            for mi, msg in enumerate(mac):
+                if not isinstance(msg, dict):
+                    print(f"[BAD MSG] g{gi} t{ti} m{mi}: not dict -> {type(msg)} {msg}")
+                    raise RuntimeError("Non-dict message in messages_and_choices")
+
+                if "role" not in msg:
+                    print(f"[BAD MSG] g{gi} t{ti} m{mi}: missing role -> {msg}")
+                    raise RuntimeError("Message without role in messages_and_choices")
+
+                if "logprobs" in msg and msg.get("role") != "assistant":
+                    print(f"[WARN] g{gi} t{ti} m{mi}: logprobs but role={msg.get('role')} -> {msg}")
 
 async def train() :
 
@@ -1128,6 +1209,7 @@ async def train() :
             pbar_desc="gather",
             max_exceptions=training_config["rollouts_per_group"] * len(batch.items),
         )
+        validate_trajectories(finished_groups) 
     
         judged_groups = []
         for group in finished_groups:
@@ -1136,13 +1218,21 @@ async def train() :
             judged_groups.append(judged_group)
     
         # await model.delete_checkpoints()
-        await model.train(
+        try:
+          await model.train(
             judged_groups,
             config=art.TrainConfig(learning_rate=training_config["learning_rate"]),
             # Lowering the logprob_calculation_chunk_size is a memory saving measure
             # to allow longer sequences (up to 8192 tokens) to be processed on a T4.
             _config={"logprob_calculation_chunk_size": 8},
-        )
+          )
+        except httpx.RemoteProtocolError as e:
+          print("=" * 80)
+          print("[ERROR] RemoteProtocolError during ART training")
+          print("可能原因：远端 backend 崩溃 / 超时 / 被杀，请检查 RunPod/SkyPilot 日志")
+          print(f"详细异常：{e!r}")
+          print("=" * 80)
+          raise
 
 # =============================================================================
 #     # Save checkpoint to G-Drive
